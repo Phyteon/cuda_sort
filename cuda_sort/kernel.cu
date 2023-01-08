@@ -4,30 +4,77 @@
 
 #include <stdio.h>
 
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
+#define MAX_THREADS_PER_BLOCK 1024  // According to CUDA article https://developer.nvidia.com/blog/cuda-refresher-cuda-programming-model/
+#define MAX_BLOCK_COUNT_PER_GRID_DIM 65535  // https://forums.developer.nvidia.com/t/how-determine-max-number-of-blocks-and-threads-for-a-gpu/68439
 
-__global__ void addKernel(int *c, const int *a, const int *b)
+cudaError_t oddEvenTranspositionSortWithCuda(int* sorted_array, const int* input_array, unsigned int size);
+
+__global__ void sortKernel(int *sorted_array, const int *input_array, unsigned int size)
 {
-    int i = threadIdx.x;
-    c[i] = a[i] + b[i];
+    // Prepare a shared buffer, long enough to hold 2 sets of data, each set from different stage of processing
+    __shared__ int local_data_copy[2*MAX_THREADS_PER_BLOCK];
+    __shared__ int exec_flag;
+    int global_index = threadIdx.x + blockIdx.x * blockDim.x;
+    int local_index = threadIdx.x;
+    int compare_flag = 0;
+    if (local_index == size - 1)
+        exec_flag = 1; // To ensure that the operation is atomic, only one thread writes the global flag
+    bool stage = true;
+    // Make a local copy in shared memory for manipulation
+    if (local_index < size)
+    {
+        local_data_copy[local_index] = input_array[global_index];
+    }
+    // Make sure all data has been copied correctly - wait for all threads to arrive at this point
+    __syncthreads();
+    while (exec_flag == 1)
+    {
+        if (stage) {
+            if ((local_index % 2 == 0) && (local_index < size - 1)) {
+                if (local_data_copy[local_index] > local_data_copy[local_index + 1]) {
+                    local_data_copy[local_index + MAX_THREADS_PER_BLOCK] = local_data_copy[local_index + 1];
+                    local_data_copy[local_index + MAX_THREADS_PER_BLOCK + 1] = local_data_copy[local_index];
+                }
+            }
+        }
+        else {
+            if ((local_index % 2 != 0) && (local_index < size - 1)) {
+                if (local_data_copy[local_index + MAX_THREADS_PER_BLOCK] > local_data_copy[local_index + MAX_THREADS_PER_BLOCK + 1]) {
+                    local_data_copy[local_index] = local_data_copy[local_index + MAX_THREADS_PER_BLOCK + 1];
+                    local_data_copy[local_index + 1] = local_data_copy[local_index + MAX_THREADS_PER_BLOCK];
+                }
+            }
+        }
+        stage = !stage;
+        __syncthreads();
+        // One thread constantly monitors changes in the sorted array. If there are no more changes compared to previous iteration, sorting is done.
+        if (local_index == size - 1) {
+            for (int idx = 0; idx < size; idx++) {
+                if (local_data_copy[idx] != local_data_copy[idx + MAX_THREADS_PER_BLOCK])
+                    compare_flag += 1;
+            }
+            if (compare_flag != 0)
+                compare_flag = 0;
+            else {
+                exec_flag = 0;
+            }
+        }
+    }
+
 }
 
 int main()
 {
-    const int arraySize = 5;
-    const int a[arraySize] = { 1, 2, 3, 4, 5 };
-    const int b[arraySize] = { 10, 20, 30, 40, 50 };
-    int c[arraySize] = { 0 };
+    const int arraySize = 10;
+    const int input_array[arraySize] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    int sorted_array[arraySize] = { 0 };
 
     // Add vectors in parallel.
-    cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
+    cudaError_t cudaStatus = oddEvenTranspositionSortWithCuda(sorted_array, input_array, arraySize);
     if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addWithCuda failed!");
+        fprintf(stderr, "oddEvenTranspositionSortWithCuda failed!");
         return 1;
     }
-
-    printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
-        c[0], c[1], c[2], c[3], c[4]);
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
@@ -41,11 +88,10 @@ int main()
 }
 
 // Helper function for using CUDA to add vectors in parallel.
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
+cudaError_t oddEvenTranspositionSortWithCuda(int* sorted_array, const int* input_array, unsigned int size)
 {
-    int *dev_a = 0;
-    int *dev_b = 0;
-    int *dev_c = 0;
+    int *dev_sorted_array = 0;
+    int *dev_input_array = 0;
     cudaError_t cudaStatus;
 
     // Choose which GPU to run on, change this on a multi-GPU system.
@@ -55,45 +101,33 @@ cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
         goto Error;
     }
 
-    // Allocate GPU buffers for three vectors (two input, one output)    .
-    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
+    // Allocate GPU buffers for two vectors (one input, one output)    .
+    cudaStatus = cudaMalloc((void**)&dev_sorted_array, size * sizeof(int));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
 
-    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
+    cudaStatus = cudaMalloc((void**)&dev_input_array, size * sizeof(int));
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
 
-    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-
-    // Copy input vectors from host memory to GPU buffers.
-    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-
-    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
+    // Copy input vector from host memory to GPU buffers.
+    cudaStatus = cudaMemcpy(dev_input_array, input_array, size * sizeof(int), cudaMemcpyHostToDevice);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
 
     // Launch a kernel on the GPU with one thread for each element.
-    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
+    sortKernel<<<1, size>>>(dev_sorted_array, dev_input_array, size);
 
     // Check for any errors launching the kernel
     cudaStatus = cudaGetLastError();
     if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+        fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
         goto Error;
     }
     
@@ -101,21 +135,20 @@ cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
     // any errors encountered during the launch.
     cudaStatus = cudaDeviceSynchronize();
     if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
+        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching Kernel!\n", cudaStatus);
         goto Error;
     }
 
     // Copy output vector from GPU buffer to host memory.
-    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaStatus = cudaMemcpy(sorted_array, dev_sorted_array, size * sizeof(int), cudaMemcpyDeviceToHost);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
 
 Error:
-    cudaFree(dev_c);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
+    cudaFree(dev_sorted_array);
+    cudaFree(dev_input_array);
     
     return cudaStatus;
 }
