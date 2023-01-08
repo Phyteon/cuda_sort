@@ -59,7 +59,11 @@ __global__ void sortKernel(int *sorted_array, const int *input_array, unsigned i
                 exec_flag = 0;
             }
         }
+        __syncthreads();
     }
+    // Copy the outcome to output array
+    if (local_index < size)
+        sorted_array[global_index] = local_data_copy[local_index];
 
 }
 
@@ -74,6 +78,11 @@ int main()
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "oddEvenTranspositionSortWithCuda failed!");
         return 1;
+    }
+
+    printf("Sorted entries:\n");
+    for (int i = 0; i < arraySize; i++) {
+        printf("%d\n", sorted_array[i]);
     }
 
     // cudaDeviceReset must be called before exiting in order for profiling and
