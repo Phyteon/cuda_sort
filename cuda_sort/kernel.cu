@@ -13,6 +13,7 @@ __global__ void sortKernel(int *sorted_array, const int *input_array, unsigned i
 {
     // Prepare a shared buffer, long enough to hold 2 sets of data, each set from different stage of processing
     __shared__ int local_data_copy[MAX_THREADS_PER_BLOCK];
+    __shared__ int prev_stage_status[MAX_THREADS_PER_BLOCK];
     __shared__ int exec_flag;
     int global_index = threadIdx.x + blockIdx.x * blockDim.x;
     int local_index = threadIdx.x;
@@ -30,6 +31,8 @@ __global__ void sortKernel(int *sorted_array, const int *input_array, unsigned i
     __syncthreads();
     while (exec_flag == 1)
     {
+        if (local_index < size)
+            prev_stage_status[local_index] = local_data_copy[local_index];
         if (stage) {
             if ((local_index % 2 == 0) && (local_index < size - 1)) {
                 if (local_data_copy[local_index] > local_data_copy[local_index + 1]) {
@@ -53,7 +56,7 @@ __global__ void sortKernel(int *sorted_array, const int *input_array, unsigned i
         // One thread constantly monitors changes in the sorted array. If there are no more changes compared to previous iteration, sorting is done.
         if (local_index == size - 1) {
             for (int idx = 0; idx < size; idx++) {
-                if (local_data_copy[idx] != local_data_copy[idx + MAX_THREADS_PER_BLOCK])
+                if (local_data_copy[idx] != prev_stage_status[idx])
                     compare_flag += 1;
             }
             if (compare_flag != 0)
