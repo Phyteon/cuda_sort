@@ -12,11 +12,12 @@ cudaError_t oddEvenTranspositionSortWithCuda(int* sorted_array, const int* input
 __global__ void sortKernel(int *sorted_array, const int *input_array, unsigned int size)
 {
     // Prepare a shared buffer, long enough to hold 2 sets of data, each set from different stage of processing
-    __shared__ int local_data_copy[2*MAX_THREADS_PER_BLOCK];
+    __shared__ int local_data_copy[MAX_THREADS_PER_BLOCK];
     __shared__ int exec_flag;
     int global_index = threadIdx.x + blockIdx.x * blockDim.x;
     int local_index = threadIdx.x;
     int compare_flag = 0;
+    int temp;
     if (local_index == size - 1)
         exec_flag = 1; // To ensure that the operation is atomic, only one thread writes the global flag
     bool stage = true;
@@ -32,16 +33,18 @@ __global__ void sortKernel(int *sorted_array, const int *input_array, unsigned i
         if (stage) {
             if ((local_index % 2 == 0) && (local_index < size - 1)) {
                 if (local_data_copy[local_index] > local_data_copy[local_index + 1]) {
-                    local_data_copy[local_index + MAX_THREADS_PER_BLOCK] = local_data_copy[local_index + 1];
-                    local_data_copy[local_index + MAX_THREADS_PER_BLOCK + 1] = local_data_copy[local_index];
+                    temp = local_data_copy[local_index];
+                    local_data_copy[local_index] = local_data_copy[local_index + 1];
+                    local_data_copy[local_index + 1] = temp;
                 }
             }
         }
         else {
             if ((local_index % 2 != 0) && (local_index < size - 1)) {
-                if (local_data_copy[local_index + MAX_THREADS_PER_BLOCK] > local_data_copy[local_index + MAX_THREADS_PER_BLOCK + 1]) {
-                    local_data_copy[local_index] = local_data_copy[local_index + MAX_THREADS_PER_BLOCK + 1];
-                    local_data_copy[local_index + 1] = local_data_copy[local_index + MAX_THREADS_PER_BLOCK];
+                if (local_data_copy[local_index] > local_data_copy[local_index + 1]) {
+                    temp = local_data_copy[local_index];
+                    local_data_copy[local_index] = local_data_copy[local_index + 1];
+                    local_data_copy[local_index + 1] = temp;
                 }
             }
         }
