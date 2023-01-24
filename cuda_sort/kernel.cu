@@ -3,6 +3,7 @@
 #include "device_launch_parameters.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define MAX_THREADS_PER_BLOCK 1024  // According to CUDA article https://developer.nvidia.com/blog/cuda-refresher-cuda-programming-model/
 #define MAX_BLOCK_COUNT_PER_GRID_DIM 65535  // https://forums.developer.nvidia.com/t/how-determine-max-number-of-blocks-and-threads-for-a-gpu/68439
@@ -65,7 +66,6 @@ __global__ void sortKernel(int *sorted_array, const int *input_array, unsigned i
                 exec_flag = 0;
             }
         }
-        __syncthreads();
     }
     // Copy the outcome to output array
     if (local_index < size)
@@ -75,8 +75,13 @@ __global__ void sortKernel(int *sorted_array, const int *input_array, unsigned i
 
 int main()
 {
-    const int arraySize = 10;
-    const int input_array[arraySize] = { 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 };
+    const int arraySize = 1024;
+    int input_array[arraySize];
+    int ref_array[arraySize];
+    for (int idx = 0; idx < arraySize; idx++) {
+        input_array[idx] = 1023 - idx;
+        ref_array[idx] = idx;
+    }
     int sorted_array[arraySize] = { 0 };
 
     // Add vectors in parallel.
@@ -86,10 +91,7 @@ int main()
         return 1;
     }
 
-    printf("Sorted entries:\n");
-    for (int i = 0; i < arraySize; i++) {
-        printf("%d\n", sorted_array[i]);
-    }
+    printf("memcmp: %d\n", memcmp(sorted_array, ref_array, arraySize*sizeof(int)));
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.
